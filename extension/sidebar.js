@@ -82,11 +82,16 @@
     var toastPid = toast.querySelector(".toast-pid");
 
     var isOpen = false;
+    var loaded = false;
 
     function open() {
         sidebar.classList.add("open");
         toggleBtn.classList.add("hidden");
         isOpen = true;
+        if (!loaded) {
+            load(select.value);
+            loaded = true;
+        }
     }
 
     function close() {
@@ -158,7 +163,4 @@
     }
 
     select.addEventListener("change", function() { load(select.value); });
-
-    // Preload data (sidebar stays closed)
-    load("1d");
 })();

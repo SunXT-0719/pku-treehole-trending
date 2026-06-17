@@ -197,7 +197,3 @@ pku-treehole-trending/
     ├── specs/               # 产品规格
     └── plans/               # 实现计划
 ```
-
-## License
-
-MIT

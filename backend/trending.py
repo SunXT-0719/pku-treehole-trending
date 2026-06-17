@@ -11,8 +11,8 @@ COARSE_TOP_N = 100  # keep top N after coarse filter
 
 W_U = 5             # unique commenters weight
 W_C = 3             # comment total weight (ln-scaled)
-W_L = 2             # likenum weight (ln-scaled)
-B = 2.0             # max time bonus multiplier
+W_L = 5             # likenum weight (ln-scaled, same as U)
+B = 1.0             # max time bonus multiplier
 T_CUTOFF = 1.0      # time bonus cutoff (hours)
 
 

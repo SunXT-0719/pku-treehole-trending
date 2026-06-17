@@ -38,6 +38,8 @@ function renderPosts(posts) {
     posts.forEach(function(p) {
         var li = document.createElement("li");
         li.className = "post-item";
+        li.title = "点击复制 #" + p.pid;
+        li.style.cursor = "pointer";
         li.innerHTML =
             '<div><span class="post-rank">' + p.rank + '</span>' +
             '<span class="post-score">' + p.final_score + ' 分</span></div>' +
@@ -48,6 +50,20 @@ function renderPosts(posts) {
             '</div>' +
             '<div class="post-text">' + escapeHtml(p.text) + '</div>' +
             '<div class="post-time">#' + p.pid + ' &middot; ' + timeAgo(p.timestamp) + '</div>';
+        li.addEventListener("click", function() {
+            navigator.clipboard.writeText(String(p.pid)).catch(function() {
+                var ta = document.createElement("textarea");
+                ta.value = String(p.pid);
+                ta.style.position = "fixed;left:-9999px";
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand("copy");
+                document.body.removeChild(ta);
+            });
+            var orig = li.style.background;
+            li.style.background = "#fff3e0";
+            setTimeout(function() { li.style.background = orig; }, 300);
+        });
         postList.appendChild(li);
     });
 }

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+backend/config_private.py
+.venv/
+*.egg-info/
+data/
+node_modules/
+explore_api.py

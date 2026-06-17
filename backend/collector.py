@@ -3,6 +3,9 @@
 import time
 import logging
 from typing import List, Dict, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests
 
 from client import TreeholeClient
 
@@ -19,8 +22,8 @@ WINDOWS = {
 
 LIST_PAGE_SIZE = 100      # max posts per page
 MAX_PAGES = 1000          # safety limit to prevent infinite loop
-LIST_DELAY = 0.3          # seconds between list API calls
-COMMENT_DELAY = 0.2       # seconds between comment API calls
+LIST_DELAY = 0.1          # seconds between list API calls
+COMMENT_FETCH_WORKERS = 8 # parallel threads for comment fetching
 
 
 class TreeholeCollector:
@@ -128,7 +131,7 @@ class TreeholeCollector:
             return 0
 
     def fetch_all_commenters(self, pids: List[int]) -> Dict[int, int]:
-        """Fetch unique commenter counts for multiple posts.
+        """Fetch unique commenter counts for multiple posts in parallel.
 
         Args:
             pids: list of post IDs
@@ -136,8 +139,48 @@ class TreeholeCollector:
         Returns:
             {pid: unique_commenter_count}
         """
+        if not pids:
+            return {}
+
+        # Extract auth header from the client session for thread-safe reuse
+        auth_header = self.client.session.headers.get("authorization", "")
+
+        def _fetch_one(pid: int) -> tuple:
+            """Fetch commenter count for one post. Returns (pid, count)."""
+            try:
+                url = f"https://treehole.pku.edu.cn/api/pku_comment_v3/{pid}"
+                headers = {"authorization": auth_header, "user-agent": self.client.session.headers.get("user-agent", "")}
+                r = requests.get(url, params={"page": 1, "limit": 100}, headers=headers, timeout=10)
+                data = r.json()
+
+                if data.get("code") != 20000:
+                    return (pid, 0)
+
+                comment_data = data.get("data")
+                if not comment_data:
+                    return (pid, 0)
+                comments = comment_data.get("data") or []
+                if not comments:
+                    return (pid, 0)
+
+                names = set()
+                for c in comments:
+                    name = c.get("name", "")
+                    if name:
+                        names.add(name)
+                return (pid, len(names))
+
+            except Exception as e:
+                logger.warning("fetch_unique_commenters for pid %d: %s", pid, e)
+                return (pid, 0)
+
         result = {}
-        for pid in pids:
-            result[pid] = self.fetch_unique_commenters(pid)
-            time.sleep(COMMENT_DELAY)
+        with ThreadPoolExecutor(max_workers=COMMENT_FETCH_WORKERS) as executor:
+            futures = {executor.submit(_fetch_one, pid): pid for pid in pids}
+            for future in as_completed(futures):
+                pid, count = future.result()
+                result[pid] = count
+
+        logger.info("fetch_all_commenters: %d posts in parallel (workers=%d)",
+                     len(pids), COMMENT_FETCH_WORKERS)
         return result

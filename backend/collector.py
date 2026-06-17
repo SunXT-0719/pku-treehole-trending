@@ -18,6 +18,7 @@ WINDOWS = {
 }
 
 LIST_PAGE_SIZE = 100      # max posts per page
+MAX_PAGES = 1000          # safety limit to prevent infinite loop
 LIST_DELAY = 0.3          # seconds between list API calls
 COMMENT_DELAY = 0.2       # seconds between comment API calls
 
@@ -66,12 +67,21 @@ class TreeholeCollector:
 
                 all_posts.extend(posts)
 
-                # Check if oldest post on this page is before cutoff
-                oldest_ts = min(p.get("timestamp", 0) or 0 for p in posts)
+                # Check if oldest valid post on this page is before cutoff
+                # Filter out posts with missing/null timestamps to avoid 0 breaking min()
+                valid_ts = [(p.get("timestamp") or 0) for p in posts if (p.get("timestamp") or 0) > 0]
+                if not valid_ts:
+                    page += 1
+                    continue
+                oldest_ts = min(valid_ts)
                 if oldest_ts < cutoff_ts:
                     break
 
                 page += 1
+                # Safety: prevent infinite pagination
+                if page > MAX_PAGES:
+                    logger.warning("collect_posts: reached MAX_PAGES=%d, stopping", MAX_PAGES)
+                    break
                 time.sleep(LIST_DELAY)
 
             except Exception as e:

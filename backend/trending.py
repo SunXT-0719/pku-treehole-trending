@@ -47,7 +47,7 @@ def fine_score(post: Dict[str, Any], unique_commenters: int, now_ts: float) -> f
         + math.log(likenum + 1) * W_L
     )
 
-    post_ts = post.get("timestamp", now_ts)
+    post_ts = post.get("timestamp") or now_ts
     t = max(0.0, (now_ts - post_ts) / 3600.0)  # hours elapsed
     bonus = B * max(0.0, 1.0 - t)
 

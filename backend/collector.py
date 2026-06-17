@@ -30,12 +30,27 @@ class TreeholeCollector:
     """Collects posts from Treehole and enriches with comment data.
 
     Caches:
-      - _commenter_cache: {pid: (ts, count)} — per-post unique commenter count, TTL 2 min
-      - _page_cache: {page_num: (ts, posts)} — list API pages, TTL 30s
+      - _commenter_cache: {pid: (ts, count)} — per-post unique commenter count
+      - _page_cache: {page_num: (ts, posts)} — list API pages
+
+    Cache TTLs are tuned for freshness:
+      - Page 1 (newest): always refetch — new posts appear every second
+      - Pages 2-5: 15s TTL — content shifts moderately
+      - Pages 6+: 60s TTL — older pages are stable
+      - Commenter counts: 5 min — user engagement changes slowly
     """
 
-    COMMENTER_CACHE_TTL = 120   # seconds — commenter count changes slowly
-    PAGE_CACHE_TTL = 30        # seconds — list pages change quickly
+    COMMENTER_CACHE_TTL = 300  # 5 minutes
+
+    @staticmethod
+    def _page_cache_ttl(page_num: int) -> int:
+        """Dynamic TTL: fresher pages expire faster."""
+        if page_num <= 1:
+            return 0   # always refetch page 1
+        elif page_num <= 5:
+            return 15  # recent pages: 15s
+        else:
+            return 60  # older pages: 60s
 
     def __init__(self):
         self.client = TreeholeClient()
@@ -65,15 +80,16 @@ class TreeholeCollector:
 
         while True:
             try:
-                # Check page cache first (avoid duplicate list API calls)
+                # Check page cache with dynamic TTL (page 1 always refetched)
                 cached = self._page_cache.get(page)
                 page_posts = None
                 if cached:
                     cached_ts, page_posts = cached
-                    if time.time() - cached_ts < self.PAGE_CACHE_TTL:
-                        logger.debug("list page %d: cache hit", page)
+                    ttl = self._page_cache_ttl(page)
+                    if ttl > 0 and time.time() - cached_ts < ttl:
+                        logger.debug("list page %d: cache hit (TTL=%ds)", page, ttl)
                     else:
-                        page_posts = None  # expired
+                        page_posts = None  # expired or page 1
 
                 if page_posts is None:
                     url = "https://treehole.pku.edu.cn/chapi/api/v3/hole/list"

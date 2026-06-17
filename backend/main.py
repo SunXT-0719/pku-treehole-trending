@@ -25,7 +25,16 @@ collector = TreeholeCollector()
 
 # Simple in-memory cache: {cache_key: (timestamp, data)}
 _cache: dict = {}
-CACHE_TTL = 30  # seconds
+CACHE_TTL = 30  # seconds (default fallback)
+
+# Window-dependent response cache TTL: smaller windows need fresher data
+_RESPONSE_CACHE_TTL = {
+    "1h": 15,
+    "0.5d": 30,
+    "1d": 60,
+    "3d": 120,
+    "7d": 300,
+}
 
 
 @app.on_event("startup")
@@ -67,9 +76,10 @@ def trending(
 
     # Check cache
     cache_key = f"{window}_{limit}"
+    cache_ttl = _RESPONSE_CACHE_TTL.get(window, CACHE_TTL)
     if cache_key in _cache:
         cached_at, cached_data = _cache[cache_key]
-        if time.time() - cached_at < CACHE_TTL:
+        if time.time() - cached_at < cache_ttl:
             return cached_data
 
     now_ts = time.time()

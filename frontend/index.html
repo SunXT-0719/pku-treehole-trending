@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>树洞热帖追踪</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>&#x1f525; 树洞热帖追踪</h1>
+        </header>
+
+        <nav class="window-tabs">
+            <button data-window="1h">1小时</button>
+            <button data-window="0.5d">半天</button>
+            <button data-window="1d" class="active">1天</button>
+            <button data-window="3d">3天</button>
+            <button data-window="7d">1周</button>
+        </nav>
+
+        <div id="status" class="status loading">
+            <span class="spinner"></span>
+            <span id="status-text">正在加载...</span>
+        </div>
+
+        <ol id="post-list" class="post-list"></ol>
+
+        <footer>
+            <span id="generated-at"></span>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

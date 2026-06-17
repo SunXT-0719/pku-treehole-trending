@@ -10,9 +10,10 @@ W_R_COARSE = 3      # reply weight in coarse filter
 COARSE_TOP_N = 100  # keep top N after coarse filter
 
 W_U = 5             # unique commenters weight
-W_C = 3             # comment total weight (ln-scaled)
-W_L = 5             # likenum weight (ln-scaled, same as U)
-B = 1.0             # max time bonus multiplier
+W_C = 3             # comment total weight (power-scaled)
+W_L = 5             # likenum weight (power-scaled, same as U)
+POW = 0.7           # power exponent for reply/likenum (milder than ln)
+B = 0.75            # max time bonus multiplier
 T_CUTOFF = 1.0      # time bonus cutoff (hours)
 
 
@@ -33,8 +34,8 @@ def coarse_filter(posts: List[Dict[str, Any]], top_n: int = COARSE_TOP_N) -> Lis
 def fine_score(post: Dict[str, Any], unique_commenters: int, now_ts: float) -> float:
     """Stage 2: refined score with commenter diversity and time bonus.
 
-    base_score = U*5 + ln(reply+1)*3 + ln(likenum+1)*2
-    bonus(t) = 5.0 * max(0, 1 - t)   where t = hours since posting
+    base_score = U*5 + reply^0.7*3 + likenum^0.7*5
+    bonus(t) = B * max(0, 1 - t)   where t = hours since posting
     final_score = base_score * (1 + bonus(t))
     """
     likenum = post.get("likenum", 0) or 0
@@ -43,8 +44,8 @@ def fine_score(post: Dict[str, Any], unique_commenters: int, now_ts: float) -> f
 
     base = (
         u * W_U
-        + math.log(reply + 1) * W_C
-        + math.log(likenum + 1) * W_L
+        + (reply ** POW) * W_C
+        + (likenum ** POW) * W_L
     )
 
     post_ts = post.get("timestamp") or now_ts

@@ -38,7 +38,7 @@ async def startup():
 
 
 @app.get("/api/health")
-async def health():
+def health():
     """Health check endpoint."""
     try:
         r = collector.client.session.get(
@@ -51,7 +51,7 @@ async def health():
 
 
 @app.get("/api/trending")
-async def trending(
+def trending(
     window: str = Query("1d", description="Time window: 1h, 0.5d, 1d, 3d, 7d"),
     limit: int = Query(10, ge=1, le=50, description="Number of results"),
 ):
@@ -85,15 +85,12 @@ async def trending(
             "count": 0,
         }
 
-    # Step 2: Coarse filter to top 100
-    candidates = coarse_filter(posts, top_n=COARSE_TOP_N)
-
-    # Step 3: Fetch unique commenter counts for candidates
-    pids = [p["pid"] for p in candidates]
+    # Step 2-3: Coarse filter to get candidate pids, then fetch commenters
+    pids = [p["pid"] for p in coarse_filter(posts, top_n=COARSE_TOP_N)]
     logger.info("fetching unique commenters for %d candidates", len(pids))
     unique_map = collector.fetch_all_commenters(pids)
 
-    # Step 4: Fine ranking
+    # Step 4: Fine ranking (rank_posts does its own coarse_filter internally)
     results = rank_posts(posts, unique_map, now_ts, top_n=limit)
 
     response = {

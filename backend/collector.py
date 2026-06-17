@@ -108,7 +108,10 @@ class TreeholeCollector:
             if data.get("code") != 20000:
                 return 0
 
-            comments = data["data"]["data"]
+            comment_data = data.get("data")
+            if not comment_data:
+                return 0
+            comments = comment_data.get("data") or []
             if not comments:
                 return 0
 

@@ -101,6 +101,13 @@
     toggleBtn.addEventListener("click", open);
     closeBtn.addEventListener("click", close);
 
+    // Close sidebar when clicking outside of it
+    document.addEventListener("click", function(e) {
+        if (!isOpen) return;
+        if (sidebar.contains(e.target) || toggleBtn.contains(e.target)) return;
+        close();
+    });
+
     function escapeHtml(s) {
         var div = document.createElement("div");
         div.textContent = s;

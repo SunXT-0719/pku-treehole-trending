@@ -7,9 +7,9 @@ import enum
 import json
 import os
 import random
-import re
 import uuid
 from http.cookiejar import Cookie
+from urllib.parse import parse_qs, urlparse
 
 import requests
 
@@ -21,7 +21,7 @@ class TreeHoleWeb(enum.Enum):
 
     OAUTH_LOGIN = "https://iaaa.pku.edu.cn/iaaa/oauthlogin.do"
     REDIR_URL = "https://treehole.pku.edu.cn/cas_iaaa_login?uuid=fc71db5799cf&plat=web"
-    SSO_LOGIN = "http://treehole.pku.edu.cn/cas_iaaa_login"
+    SSO_LOGIN = "https://treehole.pku.edu.cn/cas_iaaa_login"
     UN_READ = "https://treehole.pku.edu.cn/api/mail/un_read"
     LOGIN_BY_TOKEN = "https://treehole.pku.edu.cn/api/login_iaaa_check_token"
     LOGIN_BY_MESSAGE = "https://treehole.pku.edu.cn/api/jwt_msg_verify"
@@ -43,6 +43,7 @@ class TreeholeClient:
                               If None, defaults to ~/.treehole_cookies.json
         """
         self.session = requests.Session()
+        self.authorization = None
         # Use absolute path in home directory by default for consistency
         if cookies_file is None:
             cookies_file = os.path.expanduser("~/.treehole_cookies.json")
@@ -110,7 +111,10 @@ class TreeholeClient:
         )
         response.raise_for_status()
         # Extract token from URL and update session
-        self.authorization = re.search(r"token=(.*)", response.url).group(1)
+        tokens = parse_qs(urlparse(response.url).query).get("token", [])
+        if not tokens:
+            raise RuntimeError("SSO login response did not contain an authorization token")
+        self.authorization = tokens[0]
         self.session.cookies.update({"pku_token": self.authorization})
         self.session.headers.update({"authorization": f"Bearer {self.authorization}"})
         return response
@@ -339,8 +343,18 @@ class TreeholeClient:
             }
             cookies_list.append(cookie_dict)
 
-        with open(self.cookies_file, "w") as f:
-            json.dump(cookies_list, f, indent=4)
+        temp_file = f"{self.cookies_file}.tmp"
+        fd = os.open(temp_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(cookies_list, f, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_file, self.cookies_file)
+            os.chmod(self.cookies_file, 0o600)
+        finally:
+            if os.path.exists(temp_file):
+                os.unlink(temp_file)
 
     def load_cookies(self):
         """

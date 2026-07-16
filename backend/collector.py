@@ -2,10 +2,13 @@
 
 import time
 import logging
-from typing import List, Dict, Any
+import threading
+from typing import List, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from client import TreeholeClient
 
@@ -24,38 +27,58 @@ LIST_PAGE_SIZE = 100      # max posts per page
 MAX_PAGES = 1000          # safety limit to prevent infinite loop
 LIST_DELAY = 0.1          # seconds between list API calls
 COMMENT_FETCH_WORKERS = 8 # parallel threads for comment fetching
+COMMENT_PAGE_SIZE = 100
+MAX_COMMENT_PAGES = 100
+
+
+class CollectionError(RuntimeError):
+    """Raised when upstream data could not be collected completely."""
 
 
 class TreeholeCollector:
     """Collects posts from Treehole and enriches with comment data.
 
-    Caches:
-      - _commenter_cache: {pid: (ts, count)} — per-post unique commenter count
-      - _page_cache: {page_num: (ts, posts)} — list API pages
-
-    Cache TTLs are tuned for freshness:
-      - Page 1 (newest): always refetch — new posts appear every second
-      - Pages 2-5: 15s TTL — content shifts moderately
-      - Pages 6+: 60s TTL — older pages are stable
-      - Commenter counts: 5 min — user engagement changes slowly
+    Commenter counts are cached for five minutes. List pages are deliberately
+    not cached by page number: new posts continuously shift page boundaries,
+    so combining fresh and cached pages can silently omit posts.
     """
 
     COMMENTER_CACHE_TTL = 300  # 5 minutes
 
-    @staticmethod
-    def _page_cache_ttl(page_num: int) -> int:
-        """Dynamic TTL: fresher pages expire faster."""
-        if page_num <= 1:
-            return 0   # always refetch page 1
-        elif page_num <= 5:
-            return 15  # recent pages: 15s
-        else:
-            return 60  # older pages: 60s
-
     def __init__(self):
         self.client = TreeholeClient()
         self._commenter_cache: Dict[int, tuple] = {}
-        self._page_cache: Dict[int, tuple] = {}
+        self._thread_local = threading.local()
+
+    def _worker_session(self) -> requests.Session:
+        """Return one pooled HTTP session per comment-fetch worker thread."""
+        session = getattr(self._thread_local, "session", None)
+        if session is None:
+            session = requests.Session()
+            retry = Retry(
+                total=2,
+                connect=2,
+                read=2,
+                status=2,
+                backoff_factor=0.25,
+                status_forcelist=(429, 500, 502, 503, 504),
+                allowed_methods=frozenset({"GET"}),
+                respect_retry_after_header=True,
+            )
+            adapter = HTTPAdapter(
+                max_retries=retry,
+                pool_connections=COMMENT_FETCH_WORKERS,
+                pool_maxsize=COMMENT_FETCH_WORKERS,
+            )
+            session.mount("https://", adapter)
+            session.headers.update(self.client.session.headers)
+            session.cookies.update(self.client.session.cookies)
+            self._thread_local.session = session
+        else:
+            # Authentication can be refreshed after workers were first created.
+            session.headers.update(self.client.session.headers)
+            session.cookies.update(self.client.session.cookies)
+        return session
 
     def ensure_auth(self, username: str, password: str) -> bool:
         """Ensure the client is authenticated."""
@@ -80,29 +103,18 @@ class TreeholeCollector:
 
         while True:
             try:
-                # Check page cache with dynamic TTL (page 1 always refetched)
-                cached = self._page_cache.get(page)
-                page_posts = None
-                if cached:
-                    cached_ts, page_posts = cached
-                    ttl = self._page_cache_ttl(page)
-                    if ttl > 0 and time.time() - cached_ts < ttl:
-                        logger.debug("list page %d: cache hit (TTL=%ds)", page, ttl)
-                    else:
-                        page_posts = None  # expired or page 1
+                url = "https://treehole.pku.edu.cn/chapi/api/v3/hole/list"
+                params = {"page": page, "limit": LIST_PAGE_SIZE}
+                r = self.client.session.get(url, params=params, timeout=15)
+                r.raise_for_status()
+                data = r.json()
 
-                if page_posts is None:
-                    url = "https://treehole.pku.edu.cn/chapi/api/v3/hole/list"
-                    params = {"page": page, "limit": LIST_PAGE_SIZE}
-                    r = self.client.session.get(url, params=params, timeout=15)
-                    data = r.json()
+                if data.get("code") != 20000:
+                    raise CollectionError(
+                        f"list API error on page {page}: {data.get('message', 'unknown error')}"
+                    )
 
-                    if data.get("code") != 20000:
-                        logger.error("list API error on page %d: %s", page, data.get("message"))
-                        break
-
-                    page_posts = data["data"]["list"]
-                    self._page_cache[page] = (time.time(), page_posts)
+                page_posts = (data.get("data") or {}).get("list") or []
 
                 if not page_posts:
                     break
@@ -114,6 +126,11 @@ class TreeholeCollector:
                 valid_ts = [(p.get("timestamp") or 0) for p in page_posts if (p.get("timestamp") or 0) > 0]
                 if not valid_ts:
                     page += 1
+                    if page > MAX_PAGES:
+                        raise CollectionError(
+                            f"list pagination exceeded safety limit MAX_PAGES={MAX_PAGES}"
+                        )
+                    time.sleep(LIST_DELAY)
                     continue
                 oldest_ts = min(valid_ts)
                 if oldest_ts < cutoff_ts:
@@ -122,57 +139,103 @@ class TreeholeCollector:
                 page += 1
                 # Safety: prevent infinite pagination
                 if page > MAX_PAGES:
-                    logger.warning("collect_posts: reached MAX_PAGES=%d, stopping", MAX_PAGES)
-                    break
+                    raise CollectionError(
+                        f"list pagination exceeded safety limit MAX_PAGES={MAX_PAGES}"
+                    )
                 time.sleep(LIST_DELAY)
 
+            except CollectionError:
+                raise
             except Exception as e:
-                logger.error("list API exception on page %d: %s", page, e)
-                break
+                raise CollectionError(f"list API exception on page {page}: {e}") from e
 
         # Filter to posts strictly within the time window
-        filtered = [p for p in all_posts if (p.get("timestamp") or 0) >= cutoff_ts]
+        # De-duplicate posts if feed movement made adjacent pages overlap.
+        posts_by_pid = {p.get("pid"): p for p in all_posts if p.get("pid") is not None}
+        filtered = [
+            p for p in posts_by_pid.values()
+            if (p.get("timestamp") or 0) >= cutoff_ts
+        ]
         logger.info("collect_posts: window=%s, pages=%d, collected=%d, filtered=%d",
                      window, page, len(all_posts), len(filtered))
         return filtered
+
+    @staticmethod
+    def _positive_int(value: Any) -> Optional[int]:
+        try:
+            parsed = int(value)
+            return parsed if parsed > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    def _fetch_unique_commenters_with_session(
+        self, session: requests.Session, pid: int
+    ) -> int:
+        """Fetch every comment page and count distinct non-empty names."""
+        names = set()
+        fetched_count = 0
+        seen_page_signatures = set()
+
+        for page in range(1, MAX_COMMENT_PAGES + 1):
+            url = f"https://treehole.pku.edu.cn/api/pku_comment_v3/{pid}"
+            r = session.get(
+                url,
+                params={"page": page, "limit": COMMENT_PAGE_SIZE, "sort": "asc"},
+                timeout=10,
+            )
+            r.raise_for_status()
+            data = r.json()
+
+            if data.get("code") != 20000:
+                raise CollectionError(
+                    f"comment API error for pid {pid}: {data.get('message', 'unknown error')}"
+                )
+
+            comment_data = data.get("data") or {}
+            comments = comment_data.get("data") or []
+            if not comments:
+                return len(names)
+
+            signature = tuple(
+                c.get("cid") or c.get("id") or (c.get("name"), c.get("timestamp"), c.get("text"))
+                for c in comments
+            )
+            if signature in seen_page_signatures:
+                raise CollectionError(f"comment pagination repeated for pid {pid} on page {page}")
+            seen_page_signatures.add(signature)
+
+            fetched_count += len(comments)
+            names.update(c.get("name") for c in comments if c.get("name"))
+
+            last_page = self._positive_int(
+                comment_data.get("last_page") or comment_data.get("total_pages")
+            )
+            total = self._positive_int(
+                comment_data.get("total")
+                or comment_data.get("comment_total")
+                or data.get("total")
+            )
+            if last_page is not None and page >= last_page:
+                return len(names)
+            if total is not None and fetched_count >= total:
+                return len(names)
+            if last_page is None and total is None and len(comments) < COMMENT_PAGE_SIZE:
+                return len(names)
+
+        raise CollectionError(f"comment pagination exceeded {MAX_COMMENT_PAGES} pages for pid {pid}")
 
     def fetch_unique_commenters(self, pid: int) -> int:
         """Fetch unique commenter count for a single post.
 
         Counts distinct 'name' values in the comment list.
-        Returns 0 if the post has no comments or an error occurs.
+        Returns 0 if the post has no comments. Raises CollectionError on failure.
         """
-        try:
-            url = f"https://treehole.pku.edu.cn/api/pku_comment_v3/{pid}"
-            r = self.client.session.get(url, params={"page": 1, "limit": 100}, timeout=10)
-            data = r.json()
-
-            if data.get("code") != 20000:
-                return 0
-
-            comment_data = data.get("data")
-            if not comment_data:
-                return 0
-            comments = comment_data.get("data") or []
-            if not comments:
-                return 0
-
-            names = set()
-            for c in comments:
-                name = c.get("name", "")
-                if name:
-                    names.add(name)
-
-            return len(names)
-
-        except Exception as e:
-            logger.warning("fetch_unique_commenters for pid %d: %s", pid, e)
-            return 0
+        return self._fetch_unique_commenters_with_session(self.client.session, pid)
 
     def fetch_all_commenters(self, pids: List[int]) -> Dict[int, int]:
         """Fetch unique commenter counts for multiple posts in parallel.
 
-        Uses per-post cache (TTL 2 min) to avoid re-fetching the same post's
+        Uses per-post cache (TTL 5 min) to avoid re-fetching the same post's
         comment data across repeated or overlapping requests.
 
         Args:
@@ -202,44 +265,33 @@ class TreeholeCollector:
             logger.info("fetch_all_commenters: %d cached, %d to fetch (workers=%d)",
                          len(pids) - len(uncached_pids), len(uncached_pids), COMMENT_FETCH_WORKERS)
 
-            # Extract auth header from the client session for thread-safe reuse
-            auth_header = self.client.session.headers.get("authorization", "")
-
             def _fetch_one(pid: int) -> tuple:
-                """Fetch commenter count for one post. Returns (pid, count)."""
+                """Fetch commenter count for one post. Returns (pid, count, error)."""
                 try:
-                    url = f"https://treehole.pku.edu.cn/api/pku_comment_v3/{pid}"
-                    headers = {"authorization": auth_header, "user-agent": self.client.session.headers.get("user-agent", "")}
-                    r = requests.get(url, params={"page": 1, "limit": 100}, headers=headers, timeout=10)
-                    data = r.json()
-
-                    if data.get("code") != 20000:
-                        return (pid, 0)
-
-                    comment_data = data.get("data")
-                    if not comment_data:
-                        return (pid, 0)
-                    comments = comment_data.get("data") or []
-                    if not comments:
-                        return (pid, 0)
-
-                    names = set()
-                    for c in comments:
-                        name = c.get("name", "")
-                        if name:
-                            names.add(name)
-                    return (pid, len(names))
-
+                    count = self._fetch_unique_commenters_with_session(
+                        self._worker_session(), pid
+                    )
+                    return (pid, count, None)
                 except Exception as e:
                     logger.warning("fetch_unique_commenters for pid %d: %s", pid, e)
-                    return (pid, 0)
+                    return (pid, None, e)
 
+            failures = []
             with ThreadPoolExecutor(max_workers=COMMENT_FETCH_WORKERS) as executor:
                 futures = {executor.submit(_fetch_one, pid): pid for pid in uncached_pids}
                 for future in as_completed(futures):
-                    pid, count = future.result()
+                    pid, count, error = future.result()
+                    if error is not None:
+                        failures.append((pid, error))
+                        continue
                     self._commenter_cache[pid] = (time.time(), count)
                     result[pid] = count
+
+            if failures:
+                sample = ", ".join(f"{pid}: {error}" for pid, error in failures[:3])
+                raise CollectionError(
+                    f"failed to fetch comments for {len(failures)} posts ({sample})"
+                )
         else:
             logger.info("fetch_all_commenters: all %d posts from cache", len(pids))
 

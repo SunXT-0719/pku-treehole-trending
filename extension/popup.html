@@ -4,29 +4,40 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>树洞热帖</title>
-    <link rel="stylesheet" href="../frontend/style.css">
-    <style>
-        body { padding: 0; min-width: 380px; }
-        .container { box-shadow: none; border-radius: 0; }
-    </style>
+    <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-    <div class="container">
-        <header><h1>&#x1f525; 树洞热帖追踪</h1></header>
-        <nav class="window-tabs">
-            <button data-window="1h">1小时</button>
+    <main class="popup-shell">
+        <header>
+            <div class="brand-icon">🔥</div>
+            <div>
+                <div class="eyebrow">PKU TREEHOLE</div>
+                <h1>此刻热帖</h1>
+            </div>
+            <button id="refresh" class="icon-button" type="button" title="刷新" aria-label="刷新">↻</button>
+        </header>
+
+        <nav class="window-tabs" aria-label="时间窗口">
+            <button data-window="1h">1h</button>
             <button data-window="0.5d">半天</button>
             <button data-window="1d" class="active">1天</button>
             <button data-window="3d">3天</button>
             <button data-window="7d">1周</button>
         </nav>
-        <div id="status" class="status loading">
-            <span class="spinner"></span>
-            <span id="status-text">正在加载...</span>
+
+        <div id="notice" class="notice" hidden></div>
+        <div id="status" class="status loading" role="status">
+            <span class="spinner"></span><span id="status-text">正在获取热帖…</span>
         </div>
         <ol id="post-list" class="post-list"></ol>
-        <footer><span id="generated-at"></span></footer>
-    </div>
-    <script src="../frontend/app.js"></script>
+        <button id="load-more" class="load-more" type="button" hidden></button>
+
+        <footer>
+            <span class="connection"><span id="connection-dot" class="dot"></span><span id="connection-text">连接中</span></span>
+            <span id="generated-at"></span>
+        </footer>
+        <div id="toast" class="toast" hidden>已复制</div>
+    </main>
+    <script src="popup.js"></script>
 </body>
 </html>

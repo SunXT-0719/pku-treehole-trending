@@ -1,6 +1,5 @@
 """PKU Treehole trending algorithm — two-stage ranking."""
 
-import math
 from typing import List, Dict, Any
 
 
@@ -50,7 +49,7 @@ def fine_score(post: Dict[str, Any], unique_commenters: int, now_ts: float) -> f
 
     post_ts = post.get("timestamp") or now_ts
     t = max(0.0, (now_ts - post_ts) / 3600.0)  # hours elapsed
-    bonus = B * max(0.0, 1.0 - t)
+    bonus = B * max(0.0, 1.0 - t / T_CUTOFF)
 
     return base * (1.0 + bonus)
 
@@ -88,11 +87,14 @@ def rank_posts(
             "likenum": p.get("likenum", 0) or 0,
             "reply": p.get("reply", 0) or 0,
             "unique_commenters": u,
-            "final_score": round(score, 2),
+            "final_score": score,
         })
 
     # Sort by final_score descending
     results.sort(key=lambda x: x["final_score"], reverse=True)
+
+    for result in results:
+        result["final_score"] = round(result["final_score"], 2)
 
     # Assign ranks
     for i, r in enumerate(results[:top_n]):

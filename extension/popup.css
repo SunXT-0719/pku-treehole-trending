@@ -11,12 +11,14 @@ h1 { margin:1px 0 0; font-size:19px; letter-spacing:-.03em; }
 .icon-button { margin-left:auto; width:34px; height:34px; border:1px solid var(--line); border-radius:10px; background:#fff; color:var(--accent); cursor:pointer; font-size:19px; }
 .icon-button:hover { background:var(--accent-soft); }
 .icon-button[disabled] { opacity:.45; cursor:wait; }
+.icon-button.busy .refresh-glyph { display:inline-block; animation:spin .7s linear infinite; }
 .window-tabs { display:grid; grid-template-columns:repeat(5,1fr); gap:3px; margin:15px 0 12px; padding:3px; background:#f5f0ec; border-radius:11px; }
 .window-tabs button { padding:7px 2px; border:0; border-radius:8px; background:transparent; color:var(--muted); cursor:pointer; font-size:11px; font-weight:650; }
 .window-tabs button.active { background:#fff; color:#b84320; box-shadow:0 2px 8px rgba(70,43,28,.08); }
 .notice { margin-bottom:9px; padding:8px 10px; border:1px solid #f0d49c; border-radius:9px; background:#fff8e8; color:#826022; font-size:11px; }
 .status { display:flex; min-height:110px; align-items:center; justify-content:center; gap:8px; color:var(--muted); font-size:12px; }
 .status.error { color:#b23e3e; }
+.status:not(.loading) .spinner { display:none; }
 .status[hidden] { display:none; }
 .spinner { width:14px; height:14px; border:2px solid #ebdfd8; border-top-color:var(--accent); border-radius:50%; animation:spin .7s linear infinite; }
 @keyframes spin { to { transform:rotate(360deg); } }
@@ -40,6 +42,7 @@ footer { display:flex; justify-content:space-between; gap:12px; margin-top:11px;
 .dot { width:6px; height:6px; border-radius:50%; background:#d4a03b; }
 .dot.online { background:#47a16c; }
 .dot.offline { background:#c94d4d; }
+.dot.loading { width:10px; height:10px; border:2px solid #ebdfd8; border-top-color:var(--accent); background:transparent; animation:spin .7s linear infinite; }
 .toast { position:fixed; left:50%; bottom:14px; transform:translateX(-50%); padding:8px 12px; border-radius:999px; background:#2d2927; color:#fff; box-shadow:0 7px 20px rgba(0,0,0,.18); font-size:11px; }
 .toast[hidden] { display:none; }
 @media (prefers-color-scheme:dark) {

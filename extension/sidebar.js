@@ -32,7 +32,7 @@
             .header-actions { display:flex; gap:6px; margin-left:auto; }
             .icon { display:grid; width:33px; height:33px; padding:0; place-items:center; border:1px solid var(--line); border-radius:10px; background:#fff; color:var(--muted); cursor:pointer; font-size:17px; }
             .icon:hover { background:var(--accent-soft); color:var(--accent-dark); }
-            .refresh.busy { animation:spin .75s linear infinite; }
+            .refresh.busy .refresh-glyph { display:inline-block; animation:spin .75s linear infinite; }
             @keyframes spin { to { transform:rotate(360deg); } }
             .toolbar { display:grid; grid-template-columns:1fr auto; gap:8px; padding:0 17px 13px; }
             select { min-height:37px; padding:0 11px; border:1px solid var(--line); border-radius:11px; outline:none; background:#f8f4f1; color:var(--ink); font-size:12px; font-weight:650; }
@@ -40,6 +40,7 @@
             .dot { width:7px; height:7px; border-radius:50%; background:#d2a03c; }
             .dot.online { background:#47a16c; }
             .dot.offline { background:#c94d4d; }
+            .dot.loading { width:11px; height:11px; border:2px solid #ebdfd8; border-top-color:var(--accent); background:transparent; animation:spin .7s linear infinite; }
             .notice { margin:0 17px 10px; padding:9px 10px; border:1px solid #f0d49c; border-radius:10px; background:#fff8e8; color:#826022; font-size:11px; line-height:1.4; }
             .notice[hidden] { display:none; }
             .list { display:grid; flex:1; align-content:start; gap:8px; margin:0; padding:3px 12px 16px; overflow-y:auto; overscroll-behavior:contain; }
@@ -81,7 +82,7 @@
                 <div class="brand">🔥</div>
                 <div><div class="eyebrow">PKU TREEHOLE</div><h2>此刻热帖</h2></div>
                 <div class="header-actions">
-                    <button class="icon refresh" type="button" title="刷新" aria-label="刷新">↻</button>
+                    <button class="icon refresh" type="button" title="刷新" aria-label="刷新"><span class="refresh-glyph" aria-hidden="true">↻</span></button>
                     <button class="icon close" type="button" title="收起" aria-label="收起">×</button>
                 </div>
             </header>
@@ -113,10 +114,47 @@
     var toast = shadow.querySelector(".toast");
     var loadMoreButton = shadow.querySelector(".load-more");
     var state = { open:false, loaded:false, controller:null, window:"1d", visibleCount:10, posts:[], data:null, fromStorage:false };
-    var storage = (window.chrome && chrome.storage && chrome.storage.local) ? chrome.storage.local : {
-        get:function(keys,callback){var result={};keys.forEach(function(key){var value=localStorage.getItem(key);if(value!==null)result[key]=JSON.parse(value);});callback(result);},
-        set:function(values){Object.keys(values).forEach(function(key){localStorage.setItem(key,JSON.stringify(values[key]));});}
-    };
+
+    function createSafeStorage() {
+        var nativeStorage=null;
+        try { nativeStorage=window.chrome&&window.chrome.storage&&window.chrome.storage.local; } catch(error) { nativeStorage=null; }
+
+        function localGet(keys,callback) {
+            var result={};
+            keys.forEach(function(key){
+                try { var value=localStorage.getItem(key); if(value!==null)result[key]=JSON.parse(value); } catch(error) {}
+            });
+            callback(result);
+        }
+
+        return {
+            get:function(keys,callback) {
+                if(!nativeStorage)return localGet(keys,callback);
+                try {
+                    nativeStorage.get(keys,function(result){
+                        try { if(window.chrome.runtime.lastError)return callback({}); } catch(error) { return callback({}); }
+                        callback(result||{});
+                    });
+                } catch(error) {
+                    // An extension reload invalidates old content-script contexts.
+                    callback({});
+                }
+            },
+            set:function(values) {
+                if(!nativeStorage) {
+                    Object.keys(values).forEach(function(key){try{localStorage.setItem(key,JSON.stringify(values[key]));}catch(error){}});
+                    return;
+                }
+                try {
+                    nativeStorage.set(values,function(){try{void window.chrome.runtime.lastError;}catch(error){}});
+                } catch(error) {
+                    // Cache persistence is best-effort and must never block render.
+                }
+            }
+        };
+    }
+
+    var storage=createSafeStorage();
 
     function cacheKey(windowName) { return "trending-cache-" + windowName; }
     function timeAgo(ts) {
@@ -145,6 +183,10 @@
         var posts = data.posts || [];
         state.posts=posts; state.data=data; state.fromStorage=fromStorage;
         list.replaceChildren();
+        var stale=Boolean(data.stale||fromStorage);
+        setNotice(data.warning||(fromStorage?"正在展示上次结果，并在后台更新":""));
+        updated.textContent=data.generated_at?(stale?"缓存更新于 ":"更新于 ")+new Date(data.generated_at*1000).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"}):"";
+        setConnection(stale?"offline":"online",stale?"缓存":"在线");
         if (!posts.length) { showState("这个窗口暂时没有热帖",false); return; }
         posts.slice(0,state.visibleCount).forEach(function(p) {
             var item=document.createElement("article"); item.className="item"; item.dataset.rank=p.rank;
@@ -160,10 +202,6 @@
         var nextEnd=Math.min(state.visibleCount+10,posts.length);
         loadMoreButton.hidden=state.visibleCount>=posts.length;
         if(!loadMoreButton.hidden)loadMoreButton.textContent="展开第 "+(state.visibleCount+1)+"–"+nextEnd+" 名";
-        var stale=Boolean(data.stale||fromStorage);
-        setNotice(data.warning||(fromStorage?"正在展示上次结果，并在后台更新":""));
-        updated.textContent=data.generated_at?(stale?"缓存更新于 ":"更新于 ")+new Date(data.generated_at*1000).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"}):"";
-        setConnection(stale?"offline":"online",stale?"缓存":"在线");
     }
     function readCache(windowName) { return new Promise(function(resolve){ storage.get([cacheKey(windowName)],function(result){resolve(result[cacheKey(windowName)]||null);}); }); }
     function writeCache(windowName,data) { var value={}; value[cacheKey(windowName)]=data; storage.set(value); }
@@ -174,11 +212,16 @@
         var profile=REQUEST_PROFILES[requestedWindow]||REQUEST_PROFILES["1d"];
         var timedOut=false;
         var freshReceived=false;
-        readCache(requestedWindow).then(function(cached){ if(controller!==state.controller||freshReceived)return; if(cached)render(cached,true); else showState(profile.hint,false); });
+        setConnection("loading","更新中");
+        readCache(requestedWindow).then(function(cached){
+            if(controller!==state.controller||freshReceived)return;
+            if(cached){render(cached,true);setConnection("loading","更新中");}
+            else showState(profile.hint,false);
+        });
         var timer=setTimeout(function(){timedOut=true;controller.abort();},profile.timeout);
         fetch(API_BASE+"/api/trending?window="+encodeURIComponent(requestedWindow)+"&limit=50",{signal:controller.signal})
             .then(function(response){ if(!response.ok)return response.json().catch(function(){return {};}).then(function(body){var error=new Error(body.detail||"HTTP "+response.status);error.httpStatus=response.status;throw error;}); return response.json(); })
-            .then(function(data){ freshReceived=true; state.loaded=true; writeCache(requestedWindow,data); render(data,false); })
+            .then(function(data){ freshReceived=true; state.loaded=true; render(data,false); writeCache(requestedWindow,data); })
             .catch(function(error){
                 if(error.name==="AbortError"&&controller!==state.controller)return;
                 var hasPosts=Boolean(list.querySelector(".item"));

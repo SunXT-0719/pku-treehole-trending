@@ -20,21 +20,65 @@ var connectionText = document.getElementById("connection-text");
 var toast = document.getElementById("toast");
 var tabs = document.querySelectorAll(".window-tabs button");
 var loadMore = document.getElementById("load-more");
-var storage = (window.chrome && chrome.storage && chrome.storage.local) ? chrome.storage.local : {
-    get: function(keys, callback) {
+
+function createSafeStorage() {
+    var nativeStorage = null;
+    try {
+        nativeStorage = window.chrome && window.chrome.storage && window.chrome.storage.local;
+    } catch (error) {
+        nativeStorage = null;
+    }
+
+    function localGet(keys, callback) {
         var result = {};
         keys.forEach(function(key) {
-            var value = localStorage.getItem(key);
-            if (value !== null) result[key] = JSON.parse(value);
+            try {
+                var value = localStorage.getItem(key);
+                if (value !== null) result[key] = JSON.parse(value);
+            } catch (error) {
+                // A broken cache entry must not prevent the fresh request.
+            }
         });
         callback(result);
-    },
-    set: function(values) {
-        Object.keys(values).forEach(function(key) {
-            localStorage.setItem(key, JSON.stringify(values[key]));
-        });
     }
-};
+
+    return {
+        get: function(keys, callback) {
+            if (!nativeStorage) return localGet(keys, callback);
+            try {
+                nativeStorage.get(keys, function(result) {
+                    try {
+                        if (window.chrome.runtime.lastError) return callback({});
+                    } catch (error) {
+                        return callback({});
+                    }
+                    callback(result || {});
+                });
+            } catch (error) {
+                // Reloading an extension invalidates old content-script contexts.
+                callback({});
+            }
+        },
+        set: function(values) {
+            if (!nativeStorage) {
+                Object.keys(values).forEach(function(key) {
+                    try { localStorage.setItem(key, JSON.stringify(values[key])); } catch (error) {}
+                });
+                return;
+            }
+            try {
+                nativeStorage.set(values, function() {
+                    // Read lastError so a failed best-effort cache write stays silent.
+                    try { void window.chrome.runtime.lastError; } catch (error) {}
+                });
+            } catch (error) {
+                // Rendering fresh data is more important than persisting its cache.
+            }
+        }
+    };
+}
+
+var storage = createSafeStorage();
 
 function cacheKey(windowName) { return "trending-cache-" + windowName; }
 function setStatus(kind, text) { statusEl.className = "status " + kind; statusText.textContent = text; statusEl.hidden = false; }
@@ -63,6 +107,11 @@ function render(data, fromStorage) {
     state.data = data;
     state.fromStorage = fromStorage;
     list.replaceChildren();
+    var stale = Boolean(data.stale || fromStorage);
+    notice.hidden = !(data.warning || fromStorage);
+    notice.textContent = data.warning || (fromStorage ? "正在展示上次结果，并在后台更新" : "");
+    generatedAt.textContent = data.generated_at ? timeAgo(data.generated_at) + "更新" : "";
+    setConnection(stale ? "offline" : "online", stale ? "缓存" : "在线");
     if (!posts.length) { loadMore.hidden = true; setStatus("", "这个窗口暂时没有热帖"); return; }
     statusEl.hidden = true;
     posts.slice(0, state.visibleCount).forEach(function(p) {
@@ -81,11 +130,6 @@ function render(data, fromStorage) {
     var nextEnd = Math.min(state.visibleCount + 10, posts.length);
     loadMore.hidden = state.visibleCount >= posts.length;
     if (!loadMore.hidden) loadMore.textContent = "展开第 " + (state.visibleCount + 1) + "–" + nextEnd + " 名";
-    var stale = Boolean(data.stale || fromStorage);
-    notice.hidden = !(data.warning || fromStorage);
-    notice.textContent = data.warning || (fromStorage ? "正在展示上次结果，并在后台更新" : "");
-    generatedAt.textContent = data.generated_at ? timeAgo(data.generated_at) + "更新" : "";
-    setConnection(stale ? "offline" : "online", stale ? "缓存" : "在线");
 }
 function readCache(windowName) {
     return new Promise(function(resolve) {
@@ -102,11 +146,18 @@ function load() {
     var profile = REQUEST_PROFILES[requestedWindow] || REQUEST_PROFILES["1d"];
     var timedOut = false;
     refresh.disabled = true;
+    refresh.classList.add("busy");
+    setConnection("loading", "更新中");
     var freshReceived = false;
     readCache(requestedWindow).then(function(cached) {
         if (controller !== state.controller) return;
         if (freshReceived) return;
-        if (cached) render(cached, true); else setStatus("loading", profile.hint);
+        if (cached) {
+            render(cached, true);
+            setConnection("loading", "更新中");
+        } else {
+            setStatus("loading", profile.hint);
+        }
     });
     var timer = setTimeout(function(){ timedOut = true; controller.abort(); }, profile.timeout);
     fetch(API_BASE + "/api/trending?window=" + encodeURIComponent(requestedWindow) + "&limit=50", {signal:controller.signal})
@@ -118,7 +169,11 @@ function load() {
             });
             return response.json();
         })
-        .then(function(data){ freshReceived = true; writeCache(requestedWindow, data); render(data, false); })
+        .then(function(data){
+            freshReceived = true;
+            render(data, false);
+            writeCache(requestedWindow, data);
+        })
         .catch(function(error){
             if (error.name === "AbortError" && controller !== state.controller) return;
             var hasPosts = Boolean(list.querySelector(".post-item"));
@@ -128,7 +183,13 @@ function load() {
             notice.textContent = hasPosts ? "更新未完成，已保留上次结果" : (error.httpStatus ? error.message : message);
             setConnection("offline", timedOut ? "计算中" : "离线");
         })
-        .finally(function(){ clearTimeout(timer); if (controller === state.controller) refresh.disabled = false; });
+        .finally(function(){
+            clearTimeout(timer);
+            if (controller === state.controller) {
+                refresh.disabled = false;
+                refresh.classList.remove("busy");
+            }
+        });
 }
 
 storage.get(["trending-window"], function(result) {

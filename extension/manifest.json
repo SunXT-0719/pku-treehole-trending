@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "树洞热帖追踪",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "description": "追踪北京大学树洞实时热帖排行",
     "permissions": ["storage"],
     "host_permissions": ["http://localhost:8765/*"],

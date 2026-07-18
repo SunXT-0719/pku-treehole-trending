@@ -9,7 +9,11 @@ from types import SimpleNamespace
 BACKEND = Path(__file__).resolve().parents[1] / "backend"
 sys.path.insert(0, str(BACKEND))
 
-from collector import CollectionError, TreeholeCollector  # noqa: E402
+from collector import (  # noqa: E402
+    AuthenticationError,
+    CollectionError,
+    TreeholeCollector,
+)
 
 
 class FakeResponse:
@@ -41,13 +45,53 @@ class SequenceSession:
 
 def make_collector(session):
     collector = TreeholeCollector.__new__(TreeholeCollector)
-    collector.client = SimpleNamespace(session=session)
+    collector.client = SimpleNamespace(
+        session=session,
+        ensure_login=lambda *_args, **_kwargs: True,
+    )
     collector._commenter_cache = {}
     collector._thread_local = threading.local()
+    collector._auth_lock = threading.Lock()
+    collector._auth_version = 1
+    collector._username = "user"
+    collector._password = "password"
     return collector
 
 
 class CollectorTests(unittest.TestCase):
+    def test_list_401_refreshes_auth_and_retries_once(self):
+        expired = FakeResponse({}, status_code=401)
+        old_post = {
+            "pid": 1,
+            "timestamp": int(time.time()) - 7200,
+            "reply": 3,
+            "likenum": 2,
+        }
+        session = SequenceSession([
+            expired,
+            FakeResponse({"code": 20000, "data": {"list": [old_post]}}),
+        ])
+        collector = make_collector(session)
+        login_calls = []
+        collector.client.ensure_login = lambda *args, **kwargs: login_calls.append(
+            (args, kwargs)
+        ) or True
+
+        self.assertEqual(collector.collect_posts_in_window("1h"), [])
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(len(login_calls), 1)
+        self.assertEqual(collector._auth_version, 2)
+
+    def test_list_401_reports_interactive_login_when_refresh_fails(self):
+        session = SequenceSession([FakeResponse({}, status_code=401)])
+        collector = make_collector(session)
+        collector.client.ensure_login = lambda *_args, **_kwargs: False
+
+        with self.assertRaisesRegex(AuthenticationError, "手机令牌"):
+            collector.collect_posts_in_window("1h")
+
+        self.assertEqual(len(session.calls), 1)
+
     def test_commenters_are_counted_across_pages(self):
         session = SequenceSession([
             FakeResponse({"code": 20000, "data": {

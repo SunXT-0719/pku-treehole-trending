@@ -8,13 +8,18 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from config_private import USERNAME, PASSWORD
-from collector import TreeholeCollector, WINDOWS, CollectionError
+from collector import (
+    TreeholeCollector,
+    WINDOWS,
+    AuthenticationError,
+    CollectionError,
+)
 from trending import rank_posts, coarse_filter, COARSE_TOP_N
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="PKU Treehole Trending", version="0.2.0")
+app = FastAPI(title="PKU Treehole Trending", version="0.2.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -123,6 +128,18 @@ def trending(
                     "generated_at": int(now_ts),
                     "posts": results,
                 }
+        except AuthenticationError as exc:
+            logger.error("trending authentication failed: %s", exc)
+            if cache_key in _cache:
+                _, stale_data = _cache[cache_key]
+                return _slice_response(
+                    stale_data,
+                    limit,
+                    cached=True,
+                    stale=True,
+                    warning=f"{exc}；当前展示上次成功结果",
+                )
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
         except CollectionError as exc:
             logger.error("trending collection failed: %s", exc)
             if cache_key in _cache:

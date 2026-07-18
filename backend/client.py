@@ -14,6 +14,9 @@ from urllib.parse import parse_qs, urlparse
 import requests
 
 
+AUTH_TIMEOUT = 15
+
+
 class TreeHoleWeb(enum.Enum):
     """
     Enum for Treehole web API endpoints.
@@ -85,6 +88,7 @@ class TreeholeClient:
                 "otpCode": "",
                 "redirUrl": TreeHoleWeb.REDIR_URL.value,
             },
+            timeout=AUTH_TIMEOUT,
         )
         response.raise_for_status()
         return response.json()
@@ -108,6 +112,7 @@ class TreeholeClient:
                 "_rand": rand,
                 "token": token,
             },
+            timeout=AUTH_TIMEOUT,
         )
         response.raise_for_status()
         # Extract token from URL and update session
@@ -126,7 +131,7 @@ class TreeholeClient:
         Returns:
             requests.Response: The HTTP response object.
         """
-        response = self.session.get(TreeHoleWeb.UN_READ.value)
+        response = self.session.get(TreeHoleWeb.UN_READ.value, timeout=10)
         return response
 
     def login_by_token(self, token):
@@ -140,7 +145,9 @@ class TreeholeClient:
             requests.Response: The HTTP response object.
         """
         response = self.session.post(
-            TreeHoleWeb.LOGIN_BY_TOKEN.value, data={"code": token}  # API expects 'code' not 'token'
+            TreeHoleWeb.LOGIN_BY_TOKEN.value,
+            data={"code": token},  # API expects 'code' not 'token'
+            timeout=AUTH_TIMEOUT,
         )
         response.raise_for_status()
         
@@ -172,7 +179,9 @@ class TreeholeClient:
             requests.Response: The HTTP response object.
         """
         response = self.session.post(
-            TreeHoleWeb.LOGIN_BY_MESSAGE.value, data={"valid_code": code}
+            TreeHoleWeb.LOGIN_BY_MESSAGE.value,
+            data={"valid_code": code},
+            timeout=AUTH_TIMEOUT,
         )
         response.raise_for_status()
         
@@ -192,7 +201,9 @@ class TreeholeClient:
         Returns:
             requests.Response: The HTTP response object.
         """
-        response = self.session.post(TreeHoleWeb.SEND_MESSAGE.value)
+        response = self.session.post(
+            TreeHoleWeb.SEND_MESSAGE.value, timeout=AUTH_TIMEOUT
+        )
         response.raise_for_status()
         return response
 

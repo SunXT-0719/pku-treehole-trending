@@ -35,6 +35,10 @@ class CollectionError(RuntimeError):
     """Raised when upstream data could not be collected completely."""
 
 
+class AuthenticationError(CollectionError):
+    """Raised when an expired Treehole login cannot be refreshed automatically."""
+
+
 class TreeholeCollector:
     """Collects posts from Treehole and enriches with comment data.
 
@@ -49,6 +53,15 @@ class TreeholeCollector:
         self.client = TreeholeClient()
         self._commenter_cache: Dict[int, tuple] = {}
         self._thread_local = threading.local()
+        self._auth_lock = threading.Lock()
+        self._auth_version = 0
+        self._username: Optional[str] = None
+        self._password: Optional[str] = None
+
+    def _sync_session_auth(self, session: requests.Session) -> None:
+        """Copy the latest central authentication state into a worker session."""
+        session.headers.update(self.client.session.headers)
+        session.cookies.update(self.client.session.cookies)
 
     def _worker_session(self) -> requests.Session:
         """Return one pooled HTTP session per comment-fetch worker thread."""
@@ -71,18 +84,76 @@ class TreeholeCollector:
                 pool_maxsize=COMMENT_FETCH_WORKERS,
             )
             session.mount("https://", adapter)
-            session.headers.update(self.client.session.headers)
-            session.cookies.update(self.client.session.cookies)
+            self._sync_session_auth(session)
             self._thread_local.session = session
         else:
             # Authentication can be refreshed after workers were first created.
-            session.headers.update(self.client.session.headers)
-            session.cookies.update(self.client.session.cookies)
+            self._sync_session_auth(session)
         return session
 
     def ensure_auth(self, username: str, password: str) -> bool:
         """Ensure the client is authenticated."""
-        return self.client.ensure_login(username, password, interactive=False)
+        self._username = username
+        self._password = password
+        authenticated = self.client.ensure_login(
+            username, password, interactive=False
+        )
+        if authenticated:
+            self._auth_version += 1
+        return authenticated
+
+    def _refresh_auth(self, observed_version: int) -> None:
+        """Refresh expired authentication once across all concurrent workers."""
+        with self._auth_lock:
+            # Another request refreshed the shared client while this one waited.
+            if self._auth_version != observed_version:
+                return
+
+            if not self._username or not self._password:
+                raise AuthenticationError(
+                    "树洞登录已过期，且后端没有可用于自动刷新的账号配置"
+                )
+
+            logger.warning("Treehole authentication expired; refreshing login")
+            try:
+                authenticated = self.client.ensure_login(
+                    self._username,
+                    self._password,
+                    interactive=False,
+                )
+            except Exception as exc:
+                raise AuthenticationError(
+                    "树洞登录已过期，自动刷新失败；请重新执行交互式登录完成手机令牌验证"
+                ) from exc
+
+            if not authenticated:
+                raise AuthenticationError(
+                    "树洞登录已过期，自动刷新需要手机令牌；请重新执行交互式登录后再启动后端"
+                )
+
+            self._auth_version += 1
+            logger.info("Treehole authentication refreshed successfully")
+
+    def _get_with_auth_retry(
+        self,
+        session: requests.Session,
+        url: str,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """GET once, refresh shared login on 401, then retry exactly once."""
+        observed_version = self._auth_version
+        response = session.get(url, **kwargs)
+        if response.status_code != 401:
+            return response
+
+        self._refresh_auth(observed_version)
+        self._sync_session_auth(session)
+        response = session.get(url, **kwargs)
+        if response.status_code == 401:
+            raise AuthenticationError(
+                "树洞登录刷新后仍被拒绝；请重新执行交互式登录完成手机令牌验证"
+            )
+        return response
 
     def collect_posts_in_window(self, window: str) -> List[Dict[str, Any]]:
         """Collect all posts within the given time window.
@@ -105,7 +176,12 @@ class TreeholeCollector:
             try:
                 url = "https://treehole.pku.edu.cn/chapi/api/v3/hole/list"
                 params = {"page": page, "limit": LIST_PAGE_SIZE}
-                r = self.client.session.get(url, params=params, timeout=15)
+                r = self._get_with_auth_retry(
+                    self.client.session,
+                    url,
+                    params=params,
+                    timeout=15,
+                )
                 r.raise_for_status()
                 data = r.json()
 
@@ -178,7 +254,8 @@ class TreeholeCollector:
 
         for page in range(1, MAX_COMMENT_PAGES + 1):
             url = f"https://treehole.pku.edu.cn/api/pku_comment_v3/{pid}"
-            r = session.get(
+            r = self._get_with_auth_retry(
+                session,
                 url,
                 params={"page": page, "limit": COMMENT_PAGE_SIZE, "sort": "asc"},
                 timeout=10,
@@ -288,6 +365,12 @@ class TreeholeCollector:
                     result[pid] = count
 
             if failures:
+                auth_failure = next(
+                    (error for _, error in failures if isinstance(error, AuthenticationError)),
+                    None,
+                )
+                if auth_failure is not None:
+                    raise auth_failure
                 sample = ", ".join(f"{pid}: {error}" for pid, error in failures[:3])
                 raise CollectionError(
                     f"failed to fetch comments for {len(failures)} posts ({sample})"

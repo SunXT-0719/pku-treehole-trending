@@ -75,6 +75,7 @@ h1 { margin: 0; font-size: 23px; line-height: 1.15; letter-spacing: -0.03em; }
 .connection-dot { width: 7px; height: 7px; border-radius: 50%; background: #e3a72f; box-shadow: 0 0 0 3px rgba(227, 167, 47, 0.14); }
 .connection.online .connection-dot { background: #46a36c; box-shadow: 0 0 0 3px rgba(70, 163, 108, 0.14); }
 .connection.offline .connection-dot { background: #cf4c4c; box-shadow: 0 0 0 3px rgba(207, 76, 76, 0.14); }
+.connection.loading .connection-dot { width: 12px; height: 12px; border: 2px solid #eadfd8; border-top-color: var(--accent); background: transparent; box-shadow: none; animation: spin 0.7s linear infinite; }
 
 .window-tabs {
     display: grid;
@@ -113,6 +114,7 @@ h1 { margin: 0; font-size: 23px; line-height: 1.15; letter-spacing: -0.03em; }
 
 .status { display: flex; min-height: 120px; align-items: center; justify-content: center; gap: 9px; color: var(--ink-soft); font-size: 13px; }
 .status.error { color: #b33f3f; }
+.status:not(.loading) .spinner { display: none; }
 .status[hidden] { display: none; }
 .spinner { width: 16px; height: 16px; border: 2px solid #eadfd8; border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

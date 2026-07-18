@@ -145,7 +145,10 @@ function fetchTrending() {
     var profile = REQUEST_PROFILES[requestedWindow] || REQUEST_PROFILES["1d"];
     var timedOut = false;
     setStatus("loading", postList.children.length ? "正在后台更新，当前榜单仍可查看…" : profile.hint);
+    setConnection("loading", "更新中");
+    postList.setAttribute("aria-busy", "true");
     refreshButton.disabled = true;
+    refreshButton.textContent = "↻ 更新中";
     notice.hidden = true;
 
     var timeout = setTimeout(function() { timedOut = true; controller.abort(); }, profile.timeout);
@@ -175,7 +178,11 @@ function fetchTrending() {
         })
         .finally(function() {
             clearTimeout(timeout);
-            if (controller === state.controller) refreshButton.disabled = false;
+            if (controller === state.controller) {
+                refreshButton.disabled = false;
+                refreshButton.textContent = "↻ 刷新";
+                postList.setAttribute("aria-busy", "false");
+            }
         });
 }
 
